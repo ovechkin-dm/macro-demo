@@ -17,48 +17,98 @@ object DelegatedImpl {
       val q"$mods trait $tpname[..$tparams] extends { ..$earlydefns } with ..$parents { $self => ..$methods }" = classDecl
       val funcName = TermName(c.freshName("func"))
       val instanceName = TermName(c.freshName("instance"))
+      val implicitDefName = TermName(c.freshName("producer"))
       val newMethods = methods.collect {
-        case x: DefDef => delegateMethod(x, funcName, instanceName)
+        case x: DefDef if x.mods.hasFlag(Flag.DEFERRED) =>
+          wrapMethod(x, funcName, instanceName)
+        case x: DefDef =>
+          delegateMethod(x, funcName, instanceName)
       }
       val xx = tpname match {
         case x: TypeName => x.toTermName
       }
       val paramNames = classDecl.tparams.map(_.name)
-
-      val obj =
-        q"""object $xx {
-                implicit def delegateProducer[..$tparams]: impl.DelegateProducer[$tpname[..$paramNames]] = {
-                  new impl.DelegateProducer[$tpname[..$paramNames]] {
-                      override def delegate($instanceName: $tpname[..$paramNames]): $tpname[..$paramNames] = {
-                        new $tpname[..$paramNames] {
-                            ..$newMethods
-                        }
-                      }
+      val producer =
+        q"""
+            implicit def $implicitDefName[..$tparams]: impl.DelegateProducer[$tpname[..$paramNames]] = {
+              new impl.DelegateProducer[$tpname[..$paramNames]] {
+                  override def delegate($instanceName: $tpname[..$paramNames])
+                      ($funcName: (impl.DelegateProducer.MethodInfo, () => Any) => Any): $tpname[..$paramNames] = {
+                    new $tpname[..$paramNames] {
+                        ..$newMethods
+                    }
                   }
-                }
-            }"""
+              }
+            }
+         """
+      val obj = buildCompanionObject(compDeclOpt, xx, producer.asInstanceOf[DefDef])
       val e =
         q"""
-        $classDecl
-        $obj
+           $classDecl
+           $obj
         """
-      println(e)
       c.Expr(e)
     }
 
-    def delegateMethod(d: DefDef, funcName: TermName, instanceName: TermName): DefDef = {
+    def buildCompanionObject(src: Option[ModuleDef], traitName: TermName, producer: DefDef): ModuleDef = {
+      src match {
+        case Some(obj) =>
+          val q"$mods object $tname extends { ..$earlydefns } with ..$parents { $self => ..$body }" = obj
+          val extendedBody =
+            q"""
+               ..$body
+               $producer
+             """
+          val result = q"$mods object $tname extends { ..$earlydefns } with ..$parents { $self => ..$extendedBody }"
+          result.asInstanceOf[ModuleDef]
+        case None =>
+          q"""
+              object $traitName {
+                $producer
+              }
+           """.asInstanceOf[ModuleDef]
+      }
+    }
+
+    def wrapMethod(d: DefDef, funcName: TermName, instanceName: TermName): Tree = {
+      val argListName = TermName(c.freshName("argList"))
+      val methodInfoName = TermName(c.freshName("methodInfo"))
+      val lazyFuncName = TermName(c.freshName("lazyFunc"))
+      val resultName = TermName(c.freshName("result"))
       val q"$mods def $tname[..$tparams](...$paramss): $tpt = $body" = d
       val appliedParams = d.vparamss.map { x =>
         x.map(_.name)
       }
-      val printExpr = q"println(10)"
-      val expr = q"$printExpr; $instanceName.$tname[..$tparams](...$appliedParams)"
+      val argListExp = q"val $argListName: List[Any] = List(..${appliedParams.flatten})"
+      val methodName = d.name.decodedName.toString
+      val methodInfo = q"""val $methodInfoName = new impl.DelegateProducer.MethodInfo($methodName, 0, $argListName)"""
+      val delegatedMethodFunc = q"val $lazyFuncName = () => $instanceName.$tname[..$tparams](...$appliedParams)"
+      val funcApply = q"val $resultName = $funcName.apply($methodInfoName, $lazyFuncName)"
       val newMods = withOverride(d.mods)
-      q"$newMods def $tname[..$tparams](...$paramss): $tpt = {$expr}".asInstanceOf[DefDef]
+      q"""
+         $newMods def $tname[..$tparams](...$paramss): $tpt = {
+            $argListExp
+            $methodInfo
+            $delegatedMethodFunc
+            $funcApply
+            $resultName.asInstanceOf[$tpt]
+         }
+       """
     }
 
+    def delegateMethod(d: DefDef, funcName: TermName, instanceName: TermName): Tree = {
+      val q"$mods def $tname[..$tparams](...$paramss): $tpt = $body" = d
+      val appliedParams = d.vparamss.map { x =>
+        x.map(_.name)
+      }
+      val expr = q"$instanceName.$tname[..$tparams](...$appliedParams)"
+      val newMods = withOverride(d.mods)
+      q"$newMods def $tname[..$tparams](...$paramss): $tpt = {$expr}"
+    }
+
+
     def withOverride(mods: Modifiers): Modifiers = {
-      val newFlags = mods.flags | Flag.OVERRIDE
+      val newFlags = Flag.OVERRIDE
       val newMods = Modifiers.apply(newFlags, mods.privateWithin, mods.annotations)
       newMods
     }
