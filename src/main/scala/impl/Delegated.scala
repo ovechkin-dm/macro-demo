@@ -22,7 +22,13 @@ object DelegatedImpl {
         case x: DefDef if x.mods.hasFlag(Flag.DEFERRED) =>
           wrapMethod(x, funcName, instanceName)
         case x: DefDef =>
-          delegateMethod(x, funcName, instanceName)
+          delegateMethod(x, instanceName)
+        case v: ValDef if v.mods.hasFlag(Flag.DEFERRED) =>
+          delegateValDef(v, instanceName)
+        case _: ValDef =>
+          EmptyTree
+        case other =>
+          other
       }
       val xx = tpname match {
         case x: TypeName => x.toTermName
@@ -96,7 +102,7 @@ object DelegatedImpl {
        """
     }
 
-    def delegateMethod(d: DefDef, funcName: TermName, instanceName: TermName): Tree = {
+    def delegateMethod(d: DefDef, instanceName: TermName): Tree = {
       val q"$mods def $tname[..$tparams](...$paramss): $tpt = $body" = d
       val appliedParams = d.vparamss.map { x =>
         x.map(_.name)
@@ -104,6 +110,14 @@ object DelegatedImpl {
       val expr = q"$instanceName.$tname[..$tparams](...$appliedParams)"
       val newMods = withOverride(d.mods)
       q"$newMods def $tname[..$tparams](...$paramss): $tpt = {$expr}"
+    }
+
+    def delegateValDef(d: ValDef, instanceName: TermName): Tree = {
+      println("here!")
+      val q"$mods val $tname: $tpt = $expr" = d
+      val newMods = withOverride(d.mods)
+      val result = q"$newMods val $tname: $tpt = $instanceName.$tname"
+      result
     }
 
 

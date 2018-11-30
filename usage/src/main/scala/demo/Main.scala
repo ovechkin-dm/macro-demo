@@ -8,12 +8,15 @@ object Main extends App {
   @Delegated
   trait SimpleTrait extends scala.AnyRef {
     def test(i: Int): Int
+    val x: Int = 10
+
   }
 
   val ev = implicitly[DelegateProducer[SimpleTrait]]
 
   val simple = new SimpleTrait {
     def test(i: Int): Int = i
+    override val x: Int = 10
   }
 
   val stopWatch: (MethodInfo, () => Any) => Any = { (info, func) =>
